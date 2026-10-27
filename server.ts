@@ -871,9 +871,6 @@ async function startServer() {
   const TUTORS_FILE = path.join(DATA_DIR, "tutors.json");
   const MODERATORS_FILE = path.join(DATA_DIR, "moderators.json");
   const PARENTS_FILE = path.join(DATA_DIR, "parents.json");
-  const ADMIN_ACCOUNTS_FILE = path.join(DATA_DIR, "admin_accounts.json");
-  const ADMIN_CONFIG_FILE = path.join(DATA_DIR, "admin_config.json");
-  const DELETED_IDS_FILE = path.join(DATA_DIR, "deleted_ids.json");
   const VISITOR_CONVERSATIONS_FILE = path.join(DATA_DIR, "visitor_conversations.json");
   const SCHOOL_REP_CONFIG_FILE = path.join(DATA_DIR, "school_rep_config.json");
   const CHAT_CHANNELS_FILE = path.join(DATA_DIR, "chat_channels.json");
@@ -1157,54 +1154,40 @@ async function startServer() {
     }
   ];
 
-  // Helper: Get permanent tombstone set of deleted entity IDs (prevents deleted accounts from returning)
-  function getDeletedIds(): Set<string> {
-    ensureDataDir();
-    if (fs.existsSync(DELETED_IDS_FILE)) {
-      try {
-        const raw = fs.readFileSync(DELETED_IDS_FILE, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return new Set(parsed);
-      } catch {}
-    }
-    return new Set<string>();
-  }
-
-  function addDeletedId(id: string): void {
-    if (!id || typeof id !== 'string') return;
-    ensureDataDir();
-    const set = getDeletedIds();
-    set.add(id);
-    try {
-      fs.writeFileSync(DELETED_IDS_FILE, JSON.stringify(Array.from(set), null, 2), "utf-8");
-    } catch (e) {
-      console.warn("[Deleted IDs] Failed to write tombstone:", e);
-    }
-    broadcastRealtimeEvent("entity_deleted", { id });
-  }
-
-  // Helper: Read students from disk (strictly excludes deleted accounts, no auto-resurrection)
+  // Helper: Read students from disk with fallback to seed
   function getOnlineStudents(): any[] {
     ensureDataDir();
-    const deletedIds = getDeletedIds();
     if (fs.existsSync(STUDENTS_FILE)) {
       try {
         const raw = fs.readFileSync(STUDENTS_FILE, "utf-8");
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(s => s?.id && !deletedIds.has(s.id));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Merge any missing seed scholars by id or regNumber
+          const existingIds = new Set(parsed.map(s => s.id));
+          const existingRegs = new Set(parsed.map(s => (s.regNumber || '').toLowerCase().replace(/\s+/g, '')));
+          let changed = false;
+          for (const s of SEED_ONLINE_STUDENTS) {
+            const cleanReg = s.regNumber.toLowerCase().replace(/\s+/g, '');
+            if (!existingIds.has(s.id) && !existingRegs.has(cleanReg)) {
+              parsed.push(s);
+              changed = true;
+            }
+          }
+          if (changed) {
+            try { fs.writeFileSync(STUDENTS_FILE, JSON.stringify(parsed, null, 2), "utf-8"); } catch {}
+          }
+          return parsed;
         }
       } catch (e) {
         console.warn("[Online Storage] Could not parse students.json, falling back to seed", e);
       }
     }
-    const initial = SEED_ONLINE_STUDENTS.filter(s => !deletedIds.has(s.id));
     try {
-      fs.writeFileSync(STUDENTS_FILE, JSON.stringify(initial, null, 2), "utf-8");
+      fs.writeFileSync(STUDENTS_FILE, JSON.stringify(SEED_ONLINE_STUDENTS, null, 2), "utf-8");
     } catch (e) {
       console.warn("[Online Storage] Could not write seed students.json", e);
     }
-    return initial;
+    return [...SEED_ONLINE_STUDENTS];
   }
 
   function saveOnlineStudents(students: any[]): boolean {
@@ -1218,28 +1201,38 @@ async function startServer() {
     }
   }
 
-  // Helper: Read tutors from disk (strictly excludes deleted accounts, no auto-resurrection)
+  // Helper: Read tutors from disk
   function getOnlineTutors(): any[] {
     ensureDataDir();
-    const deletedIds = getDeletedIds();
     if (fs.existsSync(TUTORS_FILE)) {
       try {
         const raw = fs.readFileSync(TUTORS_FILE, "utf-8");
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(t => t?.id && !deletedIds.has(t.id));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const existingIds = new Set(parsed.map(t => t.id));
+          const existingEmails = new Set(parsed.map(t => (t.email || '').toLowerCase().trim()));
+          let changed = false;
+          for (const t of SEED_ONLINE_TUTORS) {
+            if (!existingIds.has(t.id) && !existingEmails.has(t.email.toLowerCase().trim())) {
+              parsed.push(t);
+              changed = true;
+            }
+          }
+          if (changed) {
+            try { fs.writeFileSync(TUTORS_FILE, JSON.stringify(parsed, null, 2), "utf-8"); } catch {}
+          }
+          return parsed;
         }
       } catch (e) {
         console.warn("[Online Storage] Could not parse tutors.json, falling back to seed", e);
       }
     }
-    const initial = SEED_ONLINE_TUTORS.filter(t => !deletedIds.has(t.id));
     try {
-      fs.writeFileSync(TUTORS_FILE, JSON.stringify(initial, null, 2), "utf-8");
+      fs.writeFileSync(TUTORS_FILE, JSON.stringify(SEED_ONLINE_TUTORS, null, 2), "utf-8");
     } catch (e) {
       console.warn("[Online Storage] Could not write seed tutors.json", e);
     }
-    return initial;
+    return [...SEED_ONLINE_TUTORS];
   }
 
   function saveOnlineTutors(tutors: any[]): boolean {
@@ -1253,28 +1246,38 @@ async function startServer() {
     }
   }
 
-  // Helper: Read moderators from disk (strictly excludes deleted accounts, no auto-resurrection)
+  // Helper: Read moderators from disk
   function getOnlineModerators(): any[] {
     ensureDataDir();
-    const deletedIds = getDeletedIds();
     if (fs.existsSync(MODERATORS_FILE)) {
       try {
         const raw = fs.readFileSync(MODERATORS_FILE, "utf-8");
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(m => m?.id && !deletedIds.has(m.id));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const existingIds = new Set(parsed.map(m => m.id));
+          const existingEmails = new Set(parsed.map(m => (m.email || '').toLowerCase().trim()));
+          let changed = false;
+          for (const m of SEED_ONLINE_MODERATORS) {
+            if (!existingIds.has(m.id) && !existingEmails.has(m.email.toLowerCase().trim())) {
+              parsed.push(m);
+              changed = true;
+            }
+          }
+          if (changed) {
+            try { fs.writeFileSync(MODERATORS_FILE, JSON.stringify(parsed, null, 2), "utf-8"); } catch {}
+          }
+          return parsed;
         }
       } catch (e) {
         console.warn("[Online Storage] Could not parse moderators.json, falling back to seed", e);
       }
     }
-    const initial = SEED_ONLINE_MODERATORS.filter(m => !deletedIds.has(m.id));
     try {
-      fs.writeFileSync(MODERATORS_FILE, JSON.stringify(initial, null, 2), "utf-8");
+      fs.writeFileSync(MODERATORS_FILE, JSON.stringify(SEED_ONLINE_MODERATORS, null, 2), "utf-8");
     } catch (e) {
       console.warn("[Online Storage] Could not write seed moderators.json", e);
     }
-    return initial;
+    return [...SEED_ONLINE_MODERATORS];
   }
 
   function saveOnlineModerators(moderators: any[]): boolean {
@@ -1319,25 +1322,23 @@ async function startServer() {
 
   function getOnlineParents(): any[] {
     ensureDataDir();
-    const deletedIds = getDeletedIds();
     if (fs.existsSync(PARENTS_FILE)) {
       try {
         const raw = fs.readFileSync(PARENTS_FILE, "utf-8");
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(p => p?.id && !deletedIds.has(p.id));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
         }
       } catch (e) {
         console.warn("[Online Storage] Could not parse parents.json, falling back to seed", e);
       }
     }
-    const initial = SEED_ONLINE_PARENTS.filter(p => !deletedIds.has(p.id));
     try {
-      fs.writeFileSync(PARENTS_FILE, JSON.stringify(initial, null, 2), "utf-8");
+      fs.writeFileSync(PARENTS_FILE, JSON.stringify(SEED_ONLINE_PARENTS, null, 2), "utf-8");
     } catch (e) {
       console.warn("[Online Storage] Could not write seed parents.json", e);
     }
-    return initial;
+    return [...SEED_ONLINE_PARENTS];
   }
 
   function saveOnlineParents(parents: any[]): boolean {
@@ -1347,56 +1348,6 @@ async function startServer() {
       return true;
     } catch (e) {
       console.error("[Online Storage] Could not write to parents.json", e);
-      return false;
-    }
-  }
-
-  // Helper: Read admin accounts from disk (strictly excludes deleted accounts)
-  function getOnlineAdminAccounts(): any[] {
-    ensureDataDir();
-    const deletedIds = getDeletedIds();
-    if (fs.existsSync(ADMIN_ACCOUNTS_FILE)) {
-      try {
-        const raw = fs.readFileSync(ADMIN_ACCOUNTS_FILE, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          return parsed.filter(a => a?.id && !deletedIds.has(a.id));
-        }
-      } catch (e) {
-        console.warn("[Online Storage] Could not parse admin_accounts.json", e);
-      }
-    }
-    return [];
-  }
-
-  function saveOnlineAdminAccounts(accounts: any[]): boolean {
-    ensureDataDir();
-    try {
-      fs.writeFileSync(ADMIN_ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), "utf-8");
-      return true;
-    } catch (e) {
-      console.error("[Online Storage] Could not write to admin_accounts.json", e);
-      return false;
-    }
-  }
-
-  // Helper: Read / Save Admin Config (e.g. customized master password)
-  function getOnlineAdminConfig(): { masterPassword?: string } {
-    ensureDataDir();
-    if (fs.existsSync(ADMIN_CONFIG_FILE)) {
-      try {
-        return JSON.parse(fs.readFileSync(ADMIN_CONFIG_FILE, "utf-8"));
-      } catch {}
-    }
-    return { masterPassword: 'StanbaxAdmin2025!' };
-  }
-
-  function saveOnlineAdminConfig(config: any): boolean {
-    ensureDataDir();
-    try {
-      fs.writeFileSync(ADMIN_CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
-      return true;
-    } catch (e) {
       return false;
     }
   }
@@ -2018,9 +1969,12 @@ async function startServer() {
   app.delete("/api/students/:id", (req, res) => {
     try {
       const studentId = req.params.id;
-      addDeletedId(studentId);
       const existingStudents = getOnlineStudents();
       const filtered = existingStudents.filter(s => s.id !== studentId);
+
+      if (filtered.length === existingStudents.length) {
+        return res.status(404).json({ success: false, error: "Scholar account not found." });
+      }
 
       saveOnlineStudents(filtered);
       broadcastRealtimeEvent("student_deleted", { id: studentId });
@@ -2152,9 +2106,11 @@ async function startServer() {
   app.delete("/api/tutors/:id", (req, res) => {
     try {
       const tutorId = req.params.id;
-      addDeletedId(tutorId);
       const existing = getOnlineTutors();
       const filtered = existing.filter(t => t.id !== tutorId);
+      if (filtered.length === existing.length) {
+        return res.status(404).json({ success: false, error: "Tutor not found." });
+      }
       saveOnlineTutors(filtered);
       broadcastRealtimeEvent("tutor_deleted", { id: tutorId });
       res.json({ success: true, message: "Faculty account removed online." });
@@ -2270,9 +2226,11 @@ async function startServer() {
   app.delete("/api/moderators/:id", (req, res) => {
     try {
       const modId = req.params.id;
-      addDeletedId(modId);
       const existing = getOnlineModerators();
       const filtered = existing.filter(m => m.id !== modId);
+      if (filtered.length === existing.length) {
+        return res.status(404).json({ success: false, error: "Moderator not found." });
+      }
       saveOnlineModerators(filtered);
       broadcastRealtimeEvent("moderator_deleted", { id: modId });
       res.json({ success: true, message: "Moderator removed online." });
@@ -2435,131 +2393,16 @@ async function startServer() {
   app.delete("/api/parents/:id", (req, res) => {
     try {
       const parentId = req.params.id;
-      addDeletedId(parentId);
       const existing = getOnlineParents();
       const filtered = existing.filter(p => p.id !== parentId);
+      if (filtered.length === existing.length) {
+        return res.status(404).json({ success: false, error: "Parent not found." });
+      }
       saveOnlineParents(filtered);
       broadcastRealtimeEvent("parent_deleted", { id: parentId });
       res.json({ success: true, message: "Parent removed online." });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'Failed to delete parent online.' });
-    }
-  });
-
-  // -------------------------------------------------------------------------
-  // 3C. DELETED IDS & TOMBSTONES API
-  // -------------------------------------------------------------------------
-  app.get("/api/deleted-ids", (_req, res) => {
-    try {
-      const ids = Array.from(getDeletedIds());
-      res.json({ success: true, deletedIds: ids });
-    } catch (err: any) {
-      res.status(500).json({ success: false, deletedIds: [] });
-    }
-  });
-
-  // -------------------------------------------------------------------------
-  // 3D. ADMIN ACCOUNTS API: Saved Online in data/admin_accounts.json
-  // -------------------------------------------------------------------------
-  app.get("/api/admin-accounts", (_req, res) => {
-    try {
-      const accounts = getOnlineAdminAccounts();
-      res.json({ success: true, adminAccounts: accounts });
-    } catch (err: any) {
-      res.status(500).json({ success: false, adminAccounts: [] });
-    }
-  });
-
-  app.post("/api/admin-accounts", (req, res) => {
-    try {
-      const accountData = req.body || {};
-      if (!accountData.name || !accountData.username) {
-        return res.status(400).json({ success: false, error: "Name and username are required." });
-      }
-      const existing = getOnlineAdminAccounts();
-      const cleanUsername = accountData.username.toLowerCase().trim();
-      const cleanEmail = (accountData.email || '').toLowerCase().trim();
-
-      const duplicate = existing.some(
-        a => a.username.toLowerCase() === cleanUsername || (cleanEmail && a.email?.toLowerCase() === cleanEmail)
-      );
-      if (duplicate) {
-        return res.status(400).json({ success: false, error: "An administrator with this username or email already exists." });
-      }
-
-      const newAccount = {
-        ...accountData,
-        id: accountData.id || `admin-${Date.now()}`,
-        username: cleanUsername,
-        email: cleanEmail || `${cleanUsername}@stanbaxschools.edu.ng`,
-        createdAt: new Date().toISOString()
-      };
-
-      const updated = [...existing, newAccount];
-      saveOnlineAdminAccounts(updated);
-      broadcastRealtimeEvent("admin_account_created", { account: newAccount });
-      res.status(201).json({ success: true, account: newAccount, message: "Admin account saved online." });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message || 'Failed to save admin account' });
-    }
-  });
-
-  app.put("/api/admin-accounts/:id", (req, res) => {
-    try {
-      const adminId = req.params.id;
-      const updates = req.body || {};
-      const existing = getOnlineAdminAccounts();
-      const index = existing.findIndex(a => a.id === adminId);
-      if (index === -1) {
-        return res.status(404).json({ success: false, error: "Administrator account not found." });
-      }
-      const updatedAccount = { ...existing[index], ...updates, id: adminId, updatedAt: new Date().toISOString() };
-      existing[index] = updatedAccount;
-      saveOnlineAdminAccounts(existing);
-      broadcastRealtimeEvent("admin_account_updated", { account: updatedAccount });
-      res.json({ success: true, account: updatedAccount, message: "Administrator account updated." });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message || 'Failed to update admin account' });
-    }
-  });
-
-  app.delete("/api/admin-accounts/:id", (req, res) => {
-    try {
-      const adminId = req.params.id;
-      if (adminId === 'super-admin' || adminId === 'admin') {
-        return res.status(403).json({ success: false, error: "Cannot delete master super administrator." });
-      }
-      addDeletedId(adminId);
-      const existing = getOnlineAdminAccounts();
-      const filtered = existing.filter(a => a.id !== adminId);
-      saveOnlineAdminAccounts(filtered);
-      broadcastRealtimeEvent("admin_account_deleted", { id: adminId });
-      res.json({ success: true, message: "Administrator account removed permanently." });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message || 'Failed to delete admin account' });
-    }
-  });
-
-  app.get("/api/admin-config", (_req, res) => {
-    try {
-      const cfg = getOnlineAdminConfig();
-      res.json({ success: true, config: { hasCustomPassword: !!cfg.masterPassword } });
-    } catch {
-      res.status(500).json({ success: false });
-    }
-  });
-
-  app.post("/api/admin-config", (req, res) => {
-    try {
-      const { masterPassword } = req.body || {};
-      if (masterPassword && masterPassword.trim().length >= 6) {
-        saveOnlineAdminConfig({ masterPassword: masterPassword.trim() });
-        res.json({ success: true, message: "Admin master configuration updated." });
-      } else {
-        res.status(400).json({ success: false, error: "Password must be at least 6 characters long." });
-      }
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err?.message });
     }
   });
 
@@ -2956,72 +2799,29 @@ async function startServer() {
         });
       }
 
-      // A. Check Master Administrator
+      // A. Check Administrator
       const adminMatches = [
         'admin', 'administrator', 'principal', 'admin@stanbaxschools.edu.ng'
       ];
-      const adminCfg = getOnlineAdminConfig();
-      const currentMasterPass = adminCfg.masterPassword || 'StanbaxAdmin2025!';
-      const validAdminPasses = [
-        currentMasterPass,
-        'StanbaxAdmin2025!',
-        'stanbax2025',
-        'Admin1234!',
-        'Stanbax2025!',
-        'Admin2025!'
-      ];
       if (adminMatches.includes(cleanId) || cleanAlphaNum === 'admin' || cleanAlphaNum === 'administrator') {
+        const validAdminPasses = ['StanbaxAdmin2025!', 'stanbax2025', 'Admin1234!', 'Stanbax2025!'];
         if (validAdminPasses.includes(cleanPass)) {
           return res.json({
             success: true,
             role: 'admin',
             targetSection: 'admin-portal',
             user: {
-              id: 'super-admin',
+              id: 'usr-admin',
               name: 'Chief Administrator & Registrar',
               email: 'admin@stanbaxschools.edu.ng',
-              role: 'admin',
-              isSuperAdmin: true,
+              role: 'admin'
             },
             storageSource: 'online_server_database'
           });
         } else {
           return res.status(401).json({
             success: false,
-            message: "Incorrect administrator password. Please verify and try again or use Forgot Password."
-          });
-        }
-      }
-
-      // A2. Check Delegated Administrator Accounts from data/admin_accounts.json
-      const onlineAdminAccounts = getOnlineAdminAccounts();
-      const matchedDelegatedAdmin = onlineAdminAccounts.find(a => {
-        const uNorm = (a.username || '').toLowerCase().trim();
-        const eNorm = (a.email || '').toLowerCase().trim();
-        const idNorm = (a.id || '').toLowerCase().trim();
-        return uNorm === cleanId || eNorm === cleanId || idNorm === cleanId;
-      });
-
-      if (matchedDelegatedAdmin) {
-        if (matchedDelegatedAdmin.status === 'Suspended') {
-          return res.status(403).json({
-            success: false,
-            message: "This administrator account is currently suspended by the Super Admin."
-          });
-        }
-        const expectedAdminPass = (matchedDelegatedAdmin.password || 'Admin2025!').trim();
-        if (cleanPass === expectedAdminPass || cleanPass === 'Admin2025!' || cleanPass === 'stanbax2025' || validAdminPasses.includes(cleanPass)) {
-          return res.json({
-            success: true,
-            role: 'admin',
-            targetSection: 'admin-portal',
-            user: matchedDelegatedAdmin,
-            storageSource: 'online_server_database'
-          });
-        } else {
-          return res.status(401).json({
-            success: false,
-            message: "Incorrect password for this administrator account."
+            message: "Incorrect password. Please verify and try again or use Forgot Password."
           });
         }
       }
