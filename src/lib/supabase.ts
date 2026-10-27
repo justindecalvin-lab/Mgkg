@@ -179,12 +179,16 @@ export const remoteVerifyLogin = async (
 ): Promise<VerifyLoginResult> => {
   if (!supabase) return { ok: false, unreachable: true };
   try {
-    const { data, error } = await supabase.rpc('verify_login', {
+    const rpcPromise = supabase.rpc('verify_login', {
       p_identifier: identifier,
       p_password: password,
     });
+    const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
+      setTimeout(() => resolve({ data: null, error: { message: 'Supabase request timed out' } }), 3500)
+    );
+    const { data, error } = await Promise.race([rpcPromise, timeoutPromise]);
     if (error) {
-      console.warn('[Supabase Auth] Login verification rejected:', error.message);
+      console.warn('[Supabase Auth] Login verification warning:', error.message);
       return { ok: false, unreachable: true, message: error.message };
     }
     const d = data as Record<string, unknown> | null;
@@ -345,13 +349,17 @@ export const checkRemoteAdminStatus = async (): Promise<boolean> => {
 // After a remote-verified login, hydrate (now including private collections
 // unlocked by the session token) then reload so every mounted state picks up
 // the shared data. The portal section is stashed so App lands back in it.
-export const completeRemoteLogin = async (token: string, targetSection: string): Promise<never> => {
+export const completeRemoteLogin = async (token: string, targetSection: string): Promise<void> => {
   setDbSession(token);
-  try { sessionStorage.setItem('stanbax_resume_section', targetSection); } catch { /* ignore */ }
-  await hydrateFromSupabase();
-  window.location.reload();
-  // unreachable in a real browser, but satisfies typing in tests
-  return new Promise<never>(() => {});
+  try {
+    sessionStorage.setItem('stanbax_resume_section', targetSection);
+    localStorage.setItem('stanbax_resume_section', targetSection);
+  } catch { /* ignore */ }
+  try {
+    await hydrateFromSupabase();
+  } catch (e) {
+    console.warn('[Supabase Hydrate on Login]', e);
+  }
 };
 
 export const remoteLogout = async (): Promise<void> => {
@@ -918,14 +926,21 @@ export const syncNewDataTypesOnline = async (payload: {
   }
 };
 
-export const ensureAdminRemoteSession = async (password: string): Promise<boolean> => {
+export const ensureAdminRemoteSession = async (password: string, username = 'admin'): Promise<boolean> => {
   if (!supabase) return false;
   if (sessionToken) return true;
   try {
-    const res = await remoteVerifyLogin('admin', password);
+    const res = await remoteVerifyLogin(username, password);
     if (res.ok && res.token) {
       setDbSession(res.token);
       return true;
+    }
+    if (username !== 'admin') {
+      const adminRes = await remoteVerifyLogin('admin', password);
+      if (adminRes.ok && adminRes.token) {
+        setDbSession(adminRes.token);
+        return true;
+      }
     }
     return false;
   } catch {
@@ -954,6 +969,8 @@ export const fetchLiveSupabaseChatAndDirectoryState = async (): Promise<{
   tutors?: any[];
   parents?: any[];
   moderators?: any[];
+  adminAccounts?: any[];
+  deletedIds?: string[];
   assessmentConfig?: any;
   gradingSystem?: any[];
   officialSignatures?: any;
@@ -975,6 +992,8 @@ export const fetchLiveSupabaseChatAndDirectoryState = async (): Promise<{
         'stanbax_tutors',
         'stanbax_parents_list',
         'stanbax_moderators',
+        'stanbax_admin_accounts',
+        'stanbax_deleted_ids',
         'stanbax_assessment_config',
         'stanbax_grading_system',
         'stanbax_official_signatures',
@@ -1103,6 +1122,8 @@ export const fetchLiveSupabaseChatAndDirectoryState = async (): Promise<{
       moderators:
         map.get('stanbax_moderators') ||
         (footerMirror?.__type === 'PUBLIC_COMMUNITY_MIRROR' ? footerMirror.moderators : undefined),
+      adminAccounts: map.get('stanbax_admin_accounts') || undefined,
+      deletedIds: map.get('stanbax_deleted_ids') || undefined,
       assessmentConfig: resolvedAssessment,
       gradingSystem:
         map.get('stanbax_grading_system') ||
